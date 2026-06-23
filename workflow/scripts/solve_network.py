@@ -35,11 +35,15 @@ from _helpers import (
     update_config_from_wildcards,
 )
 from opts.bidirectional_link import add_bidirectional_link_constraints
+from opts.ca_policy import add_sb886_hourly_matching_constraint
 from opts.land import add_land_use_constraints
 from opts.policy import (
+    add_cfe_matching_constraint,
+    add_dc_flexibility_constraint,
     add_regional_co2limit,
     add_RPS_constraints,
     add_technology_capacity_target_constraints,
+    report_cfe_slack,
 )
 from opts.reserves import (
     add_ERM_constraints,
@@ -141,10 +145,8 @@ def extra_functionality(n, snapshots):
     # Define constraint application functions in a registry
     # Each function should take network and necessary parameters
     constraint_registry = {
-        "RPS": lambda: add_RPS_constraints(n, config, sector_enabled, global_snakemake)
-        if n.generators.p_nom_extendable.any()
-        else None,
-        "REM": lambda: add_regional_co2limit(n, config) if n.generators.p_nom_extendable.any() else None,
+        "RPS": lambda: add_RPS_constraints(n, config, sector_enabled, global_snakemake),
+        "REM": lambda: add_regional_co2limit(n, config),
         "PRM": lambda: add_PRM_constraints(n, config, global_snakemake)
         if n.generators.p_nom_extendable.any()
         else None,
@@ -176,6 +178,19 @@ def extra_functionality(n, snapshots):
     dr_config = config["electricity"].get("demand_response", {})
     if dr_config:
         add_demand_response_constraint(n, config, sector_enabled)
+
+    # Apply DC flexibility annual energy cap if configured
+    dc_config = config.get("data_centers", {})
+    if dc_config.get("enable", False) and dc_config.get("flexibility_fraction", 0) > 0:
+        add_dc_flexibility_constraint(n, config)
+
+    # Apply CFE matching constraint if configured
+    if dc_config.get("enable", False) and dc_config.get("cfe_matching"):
+        add_cfe_matching_constraint(n, config)
+
+    # Apply SB 886 hourly zero-carbon matching constraint
+    if config.get("sb886", {}).get("enable", False):
+        add_sb886_hourly_matching_constraint(n, config)
 
     # Apply sector-specific constraints if sector is enabled
     if sector_enabled:
@@ -339,6 +354,7 @@ def solve_network(n, config, solving, opts="", **kwargs):
                 kwargs["snapshots"] = sns_horizon
 
                 run_optimize(n, rolling_horizon, skip_iterations, cf_solving, **kwargs)
+                report_cfe_slack(n)
 
                 if i == len(n.investment_periods) - 1:
                     logger.info(f"Final time horizon {planning_horizon}")

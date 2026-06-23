@@ -68,6 +68,7 @@ rule add_sectors:
     threads: 1
     resources:
         mem_mb=4000,
+        walltime=config_provider("walltime", "add_sectors", default="00:30:00"),
     script:
         "../scripts/add_sectors.py"
 

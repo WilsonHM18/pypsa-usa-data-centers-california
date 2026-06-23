@@ -88,6 +88,63 @@ def clean_locational_multiplier(df: pd.DataFrame):
     return df.groupby("State").mean()
 
 
+def apply_frozen_capex(
+    n: pypsa.Network,
+    costs: pd.DataFrame,
+    base_costs: pd.DataFrame,
+) -> None:
+    """
+    For non-extendable (existing) generators, replace target-year annualized CapEx
+    with base-year (2025) annualized CapEx while keeping target-year FOM.
+
+    For carriers with regional multipliers the existing capital_cost already encodes
+    both the locational adjustment and the target-year CapEx rate.  We isolate the
+    CapEx component, rescale it by the ratio base/target, and add back the target-year
+    FOM so the regional variation is preserved.
+
+    For carriers without regional multipliers the capital_cost is uniform and we can
+    replace it directly.
+    """
+    carriers_with_multipliers = set(const.CAPEX_LOCATIONAL_MULTIPLIER.keys())
+    fixed_mask = ~n.generators.p_nom_extendable
+
+    if not fixed_mask.any():
+        return
+
+    for carrier in n.generators.loc[fixed_mask, "carrier"].unique():
+        if carrier not in base_costs.index or carrier not in costs.index:
+            continue
+
+        capex_base = base_costs.at[carrier, "annualized_capex_per_mw"] if "annualized_capex_per_mw" in base_costs.columns else float("nan")
+        capex_target = costs.at[carrier, "annualized_capex_per_mw"] if "annualized_capex_per_mw" in costs.columns else float("nan")
+        fom_target_kw = costs.at[carrier, "opex_fixed_per_kw"] if "opex_fixed_per_kw" in costs.columns else float("nan")
+
+        mask = fixed_mask & (n.generators.carrier == carrier)
+
+        if pd.isna(capex_base) or pd.isna(capex_target):
+            # Fall back to freezing the full annualized_capex_fom from base year
+            capex_fom_base = base_costs.at[carrier, "annualized_capex_fom"] if "annualized_capex_fom" in base_costs.columns else float("nan")
+            if not pd.isna(capex_fom_base):
+                n.generators.loc[mask, "capital_cost"] = capex_fom_base
+            continue
+
+        fom_target = fom_target_kw * 1e3 if not pd.isna(fom_target_kw) else 0.0
+
+        if carrier in carriers_with_multipliers and capex_target > 0:
+            # Regional multiplier already embedded in capital_cost.
+            # capital_cost = capex_regional + fom_target  →  rescale capex component only.
+            capex_ratio = capex_base / capex_target
+            locational_capex = n.generators.loc[mask, "capital_cost"] - fom_target
+            n.generators.loc[mask, "capital_cost"] = locational_capex * capex_ratio + fom_target
+        else:
+            n.generators.loc[mask, "capital_cost"] = capex_base + fom_target
+
+    logger.info(
+        "Applied frozen base-year CapEx to non-extendable generators "
+        "(FOM updated to target year)."
+    )
+
+
 def update_capital_costs(
     n: pypsa.Network,
     carrier: str,
@@ -210,6 +267,7 @@ def load_powerplants(
     plants_fn,
     investment_periods: list[int],
     interconnect: str | None = None,
+    respect_planned_retirements: bool = False,
 ) -> pd.DataFrame:
     plants = pd.read_csv(
         plants_fn,
@@ -225,20 +283,38 @@ def load_powerplants(
         plants["generator_retirement_date"],
     )
 
+    plants["planned_generator_retirement_date"] = pd.to_datetime(
+        plants["planned_generator_retirement_date"],
+        errors="coerce",
+    )
+
     # if operational_status is proposed replace build_year with year of current_planned_generator_operating_date
     plants.loc[plants.operational_status == "proposed", "build_year"] = plants.loc[
         plants.operational_status == "proposed",
         "current_planned_generator_operating_date",
     ].dt.year
 
-    # If operational_status is existing or proposed, replace generator_retirement_date with 1/1/2100
-    retirement_date = pd.to_datetime("2100-01-01")
-    plants.loc[plants.operational_status.isin(["existing", "proposed"]), "generator_retirement_date"] = retirement_date
+    # For existing/proposed plants, set retirement date to 2100 unless we are
+    # honouring Form 860 planned retirements (e.g. Reference_2030 scenario).
+    far_future = pd.to_datetime("2100-01-01")
+    existing_mask = plants.operational_status.isin(["existing", "proposed"])
+    plants.loc[existing_mask, "generator_retirement_date"] = far_future
+
+    if respect_planned_retirements:
+        # Override with planned_generator_retirement_date where it is earlier than 2100
+        has_planned = existing_mask & plants["planned_generator_retirement_date"].notna()
+        plants.loc[has_planned, "generator_retirement_date"] = plants.loc[
+            has_planned, "planned_generator_retirement_date"
+        ]
+        logger.info(
+            f"respect_planned_retirements=True: applied Form 860 retirement dates "
+            f"to {has_planned.sum()} existing/proposed plants."
+        )
 
     # Handle NaT values
     plants.loc[plants.generator_retirement_date.isna(), "generator_retirement_date"] = pd.to_datetime("1900-01-01")
 
-    # Filter out plants that are not built by first investment period and retired before the first investment period.
+    # Filter out plants not yet built by first investment period, or already retired.
     plants = plants[plants.build_year <= investment_periods[0]]
     plants = plants[plants.generator_retirement_date.dt.year > investment_periods[0]]
 
@@ -939,6 +1015,7 @@ def main(snakemake):
         snakemake.input["powerplants"],
         n.investment_periods,
         interconnect=interconnection,
+        respect_planned_retirements=params.get("respect_planned_retirements", False),
     )
     plants = filter_plants_by_region(
         plants,
@@ -1029,6 +1106,13 @@ def main(snakemake):
         df_multiplier = pd.read_csv(multiplier_file)
         df_multiplier = clean_locational_multiplier(df_multiplier)
         update_capital_costs(n, carrier, costs, df_multiplier)
+
+    # Freeze CapEx for existing (non-extendable) generators at base-year ATB rates.
+    # Only applied when a base_costs file is provided (i.e., target year != base year).
+    if "base_costs" in dict(snakemake.input):
+        base_costs_df = pd.read_csv(snakemake.input["base_costs"])
+        base_costs_df = base_costs_df.pivot(index="pypsa-name", columns="parameter", values="value")
+        apply_frozen_capex(n, costs, base_costs_df)
 
     if params.conventional["dynamic_fuel_price"].get("enable", False):
         logger.info("Applying dynamic fuel pricing to conventional generators")

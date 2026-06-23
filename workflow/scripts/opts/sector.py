@@ -24,12 +24,23 @@ def add_demand_response_constraint(n, config, sector_study):
             return
 
         deferrable_links = dr_links[dr_links.index.str.endswith("-discharger")]
-        deferrable_loads = n.loads[n.loads.bus.isin(deferrable_links.bus1)]
+        # Exclude non-AC loads (e.g. DC data-center loads) — they must not cap DR
+        deferrable_loads = n.loads[
+            n.loads.bus.isin(deferrable_links.bus1) & (n.loads.carrier != "DC")
+        ]
 
-        lhs = n.model["Link-p"].loc[:, deferrable_links.index].groupby(deferrable_links.bus1).sum()
         rhs = n.loads_t["p_set"][deferrable_loads.index].mul(shift).round(2)
         rhs.columns.name = "bus1"
         rhs = rhs.rename(columns={x: x.strip(" AC") for x in rhs})
+
+        # Some buses may have only DC loads (no AC load); drop their DR links
+        # so lhs and rhs stay aligned.
+        active_links = deferrable_links[deferrable_links.bus1.isin(rhs.columns)]
+        if active_links.empty:
+            logger.info("No demand response links with AC loads identified.")
+            return
+
+        lhs = n.model["Link-p"].loc[:, active_links.index].groupby(active_links.bus1).sum()
 
         # force rhs to be same order as lhs
         # idk why but coordinates were not aligning and this gets around that

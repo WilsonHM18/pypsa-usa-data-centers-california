@@ -11,18 +11,67 @@ dconf
 *.dot
 *.tar.gz
 
-# configuration files
-config/
+# configuration files (ignore all except the 5 paper scenarios + cluster config)
+workflow/config/*
+!workflow/config/.gitkeep
+!workflow/config/config.ca_ref2025.yaml
+!workflow/config/config.ca_ref2030_ab32rps.yaml
+!workflow/config/config.ca_counterfactual2030_ab32rps.yaml
+!workflow/config/config.ca_optimized2030_ab32rps.yaml
+!workflow/config/config.ca_counterfactual2030_opt_ab32rps.yaml
+!workflow/config/config.cluster.yaml
+!workflow/config/policy_constraints/
 
 # generated files
 results/
 resources/
-data/
 benchmarks/
-resources/
 notebooks/
 venv/
 logs/
+
+# data: ignore large datasets, keep custom data-center demand CSVs
+workflow/data/*
+!workflow/data/data_centers/
+workflow/data/data_centers/*
+!workflow/data/data_centers/ca_county_demand_MWh.csv
+!workflow/data/data_centers/ca_county_demand_MWh_counterfactual.csv
+
+# ad-hoc analysis and figure generation scripts (not part of reproducible workflow)
+workflow/analyze_*.py
+workflow/check_*.py
+workflow/compare_*.py
+workflow/solve_with_dc_demand.py
+workflow/scripts/plot_scenario_*.py
+workflow/scripts/figures_california_ratepayer.py
+workflow/scripts/scenario_comparison.py
+workflow/scripts/fig_cost_map.py
+workflow/scripts/plot_comparison_figures.py
+workflow/scripts/plot_dc_policy_brief.py
+workflow/scripts/plot_wecc_policy_brief.py
+workflow/scripts/plot_ca_transmission_map.py
+workflow/scripts/plot_nodal_lmp_diff.py
+workflow/scripts/extract_nodal_lmp_diff.py
+workflow/scripts/build_dc_demand_csv.py
+workflow/scripts/sanity_check_ca.py
+workflow/scripts/solve_network_ab2383.py
+workflow/scripts/solve_network_sb886.py
+workflow/scripts/opts/ca_policy.py
+
+# SLURM submission scripts: ignore all run_*_.sh, keep only the 5 paper scenario scripts
+workflow/run_slurm_*.sh
+workflow/run_extract_lmp.sh
+!workflow/run_slurm_ca_ref2025.sh
+!workflow/run_slurm_ca_ref2030_ab32rps.sh
+!workflow/run_slurm_ca_counterfactual2030_ab32rps.sh
+!workflow/run_slurm_ca_optimized2030_ab32rps.sh
+!workflow/run_slurm_ca_counterfactual2030_opt_ab32rps.sh
+
+# scratch job files and non-reproducible documents
+workflow/*.script
+workflow/*.pptx
+workflow/*.docx
+workflow/*.xlsx
 
 ## Core latex/pdflatex auxiliary files:
 *.aux
@@ -266,6 +315,5 @@ TSWLatexianTemp*
 
 # Exceptions to gitignore
 connect.sh
-/workflow/config/config.cluster.yaml
 /workflow/repo_data/dag.png
 !.pre-commit-config.yaml

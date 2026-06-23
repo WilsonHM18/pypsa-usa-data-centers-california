@@ -1,0 +1,4 @@
+planning_horizon,region,carrier,pct,notes
+2025,CA,"onwind, offwind_floating, solar, geothermal, biomass",0.50,CA SB 100 2025 target
+2030,CA,"onwind, offwind_floating, solar, geothermal, biomass",0.60,CA SB 100 2030 target
+2030,custom,"onwind, solar, offwind_floating, geothermal, offwind",0.6,example_entry

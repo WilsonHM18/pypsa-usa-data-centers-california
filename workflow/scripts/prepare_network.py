@@ -341,5 +341,10 @@ if __name__ == "__main__":
         p_nom_max_ext=params.links.get("max_extension", np.inf),
     )
 
+    # SB 886 storage mandate sensitivity: add co-located storage only when
+    # sb886.storage_mandate: true in config (not required by the bill).
+    from opts.ca_policy import add_sb886_mandated_storage
+    add_sb886_mandated_storage(n, snakemake.config)
+
     n.meta = dict(snakemake.config, **dict(wildcards=dict(snakemake.wildcards)))
     n.export_to_netcdf(snakemake.output[0])

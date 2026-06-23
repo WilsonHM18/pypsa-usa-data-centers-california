@@ -385,8 +385,9 @@ def add_ERM_constraints(n, config=None, snakemake=None, regional_prm_data=None):
         define_operational_constraints_for_non_extendables(n, n.snapshots, c, "p_store", 0)
 
         # Create model variables to track transmission contributions
-        model.add_variables(-np.inf, model.variables["Line-s"].upper, name="Line-s_RESERVES")
-        define_operational_constraints_for_extendables(n, n.snapshots, "Line", "s", 0)
+        if not n.lines.empty and "Line-s" in model.variables:
+            model.add_variables(-np.inf, model.variables["Line-s"].upper, name="Line-s_RESERVES")
+            define_operational_constraints_for_extendables(n, n.snapshots, "Line", "s", 0)
 
         if not n.links.empty:
             model.add_variables(-np.inf, model.variables["Link-p"].upper, name="Link-p_RESERVES")
@@ -409,7 +410,7 @@ def add_ERM_constraints(n, config=None, snakemake=None, regional_prm_data=None):
             # Add the nodal balance constraints to the model
             for bus in region_buses.index:
                 # Generation Contributions
-                assert n._multi_invest, "Ensure model configured for mutli-investment"
+                assert len(n.investment_periods) >= 1, "ERM requires at least one investment period"
                 active_mask = get_activity_mask(n, "Generator", (erm.planning_horizon, hour))
                 bus_gens_ext = n.generators[(n.generators.bus == bus) & n.generators.p_nom_extendable & active_mask]
                 bus_gens_non_ext = n.generators[
@@ -439,15 +440,18 @@ def add_ERM_constraints(n, config=None, snakemake=None, regional_prm_data=None):
                 bus_storage_capacity = bus_storage_capacity_discharge - bus_storage_capacity_store
 
                 # Line Contributions
-                bus_lines_b0 = n.lines[(n.lines.bus0 == bus)]
-                bus_lines_b1 = n.lines[(n.lines.bus1 == bus)]
-                bus_lines_b0 = (
-                    model["Line-s_RESERVES"].sel(snapshot=(erm.planning_horizon, hour)).loc[bus_lines_b0.index].sum()
-                )
-                bus_lines_b1 = (
-                    model["Line-s_RESERVES"].sel(snapshot=(erm.planning_horizon, hour)).loc[bus_lines_b1.index].sum()
-                )
-                bus_line_capacity_flow = bus_lines_b1 - bus_lines_b0  # positive for injection, negative for withdrawal
+                if not n.lines.empty and "Line-s_RESERVES" in model.variables:
+                    bus_lines_b0 = n.lines[(n.lines.bus0 == bus)]
+                    bus_lines_b1 = n.lines[(n.lines.bus1 == bus)]
+                    bus_lines_b0 = (
+                        model["Line-s_RESERVES"].sel(snapshot=(erm.planning_horizon, hour)).loc[bus_lines_b0.index].sum()
+                    )
+                    bus_lines_b1 = (
+                        model["Line-s_RESERVES"].sel(snapshot=(erm.planning_horizon, hour)).loc[bus_lines_b1.index].sum()
+                    )
+                    bus_line_capacity_flow = bus_lines_b1 - bus_lines_b0  # positive for injection, negative for withdrawal
+                else:
+                    bus_line_capacity_flow = 0
 
                 # Link Contributions
                 bus_links_b0 = n.links[(n.links.bus0 == bus)]

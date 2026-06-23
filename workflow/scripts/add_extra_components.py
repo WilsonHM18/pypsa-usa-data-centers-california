@@ -8,6 +8,7 @@ import pandas as pd
 import pypsa
 from _helpers import calculate_annuity, configure_logging
 from add_electricity import add_missing_carriers
+import constants as const
 from opts._helpers import get_region_buses
 from pypsa.descriptors import get_switchable_as_dense as get_as_dense
 from shapely.geometry import Point
@@ -244,6 +245,7 @@ def split_retirement_gens(
     costs: pd.DataFrame,
     carriers: list[str] | None = None,
     economic: bool = True,
+    base_costs: pd.DataFrame | None = None,
 ):
     """
     Seperates extendable conventional generators into existing and new
@@ -253,7 +255,8 @@ def split_retirement_gens(
     Specifically this function does the following:
     1. Creates duplicate generators for any that are tagged as extendable. For
     example, an extendable "CCGT" generator will be split into "CCGT existing" and "CCGT"
-    2. Capital costs of existing extendable generators are replaced with fixed costs
+    2. Capital costs of existing extendable generators are replaced with frozen base-year
+       CapEx + target-year FOM (when base_costs is provided), else FOM-only.
     3. p_nom_max of existing extendable generators are set to p_nom
     4. p_nom_min of existing and new generators is set to zero
 
@@ -265,6 +268,9 @@ def split_retirement_gens(
     economic: bool
         If True, enable economic retirement, else only allow lifetime
         retirement for the new generators
+    base_costs: pd.DataFrame or None
+        If provided, freeze CapEx of existing generators at base-year values
+        while updating FOM to the target year.
     """
     retirement_mask = (
         n.generators["p_nom_extendable"]
@@ -276,12 +282,30 @@ def split_retirement_gens(
     if retirement_gens.empty:
         return
 
-    # Change capex to fixed OM cost for retiring generators
+    carriers_with_multipliers = set(const.CAPEX_LOCATIONAL_MULTIPLIER.keys())
+
+    def _existing_capital_cost(row):
+        carrier = row["carrier"]
+        fom_target = costs.at[carrier, "opex_fixed_per_kw"] * 1e3 if "opex_fixed_per_kw" in costs.columns else 0.0
+        if base_costs is None or carrier not in base_costs.index:
+            return fom_target
+        capex_base = base_costs.at[carrier, "annualized_capex_per_mw"] if "annualized_capex_per_mw" in base_costs.columns else float("nan")
+        capex_target = costs.at[carrier, "annualized_capex_per_mw"] if "annualized_capex_per_mw" in costs.columns else float("nan")
+        if pd.isna(capex_base) or pd.isna(capex_target) or capex_target == 0:
+            return fom_target
+        if carrier in carriers_with_multipliers:
+            capex_ratio = capex_base / capex_target
+            locational_capex = row["capital_cost"] - fom_target
+            return locational_capex * capex_ratio + fom_target
+        else:
+            return capex_base + fom_target
+
+    # Change capex for retiring generators (frozen base-year CapEx + target FOM, or FOM-only)
     n.generators["capital_cost"] = n.generators.apply(
         lambda row: (
             row["capital_cost"]
-            if row.name not in (retirement_gens.index)
-            else costs.at[row["carrier"], "opex_fixed_per_kw"] * 1e3
+            if row.name not in retirement_gens.index
+            else _existing_capital_cost(row)
         ),
         axis=1,
     )
@@ -640,24 +664,65 @@ def add_demand_response(
     n: pypsa.Network,
     dr_config: dict[str, str | float],
 ) -> None:
-    """Add price based demand response to network."""
+    """Add price based demand response to network.
+
+    Config keys:
+      shift            – fraction of load shiftable per hour (0–1)
+      marginal_cost    – cost per MWh stored (discourages unnecessary shifting)
+      dc_only          – if True, attach DR only to DC load buses (carrier="DC")
+      max_shift_hours  – maximum hours a unit of energy may be deferred/advanced;
+                         sets e_nom = shift × peak_load × max_shift_hours per bus.
+                         Set to null/0 for unconstrained (original behaviour).
+    """
     n.add("Carrier", "demand_response", color="#dd2e23", nice_name="Demand Response")
 
     shift = dr_config.get("shift", 0)
     if shift == 0:
-        logger.info(f"DR not applied as allowable sift is {shift}")
+        logger.info(f"DR not applied as allowable shift is {shift}")
         return
 
     marginal_cost_storage = dr_config.get("marginal_cost", 0)
     if marginal_cost_storage == 0:
         logger.warning("No cost applied to demand response")
 
-    # attach dr at all load locations
+    dc_only = dr_config.get("dc_only", False)
+    max_shift_hours = dr_config.get("max_shift_hours", None)
 
-    buses = n.loads.bus
-    df = n.buses[n.buses.index.isin(buses)].copy()
+    # Select load buses — all loads or DC-only
+    if dc_only:
+        dc_load_buses = n.loads.loc[n.loads.carrier == "DC", "bus"].unique()
+        df = n.buses[n.buses.index.isin(dc_load_buses)].copy()
+        logger.info(f"Attaching demand response to {len(df)} DC load buses only.")
+    else:
+        df = n.buses[n.buses.index.isin(n.loads.bus)].copy()
+        logger.info(f"Attaching demand response to all {len(df)} load buses.")
 
-    # two storageunits for forward and backwards load shifting
+    # Compute per-bus e_nom from the shifting window.
+    # e_nom = shift × peak_load × max_shift_hours caps the maximum energy
+    # that can be in the deferred-demand store at any instant, approximating
+    # a max_shift_hours delivery deadline.
+    if max_shift_hours:
+        relevant_loads = n.loads[n.loads.bus.isin(df.index)]
+        if dc_only:
+            relevant_loads = relevant_loads[relevant_loads.carrier == "DC"]
+
+        # Peak load per bus across all snapshots
+        ts_cols = relevant_loads.index.intersection(n.loads_t.p_set.columns)
+        static_vals = relevant_loads.loc[~relevant_loads.index.isin(ts_cols), "p_set"]
+        peak_per_bus = static_vals.groupby(relevant_loads.loc[static_vals.index, "bus"]).max()
+        if not ts_cols.empty:
+            ts_peak = n.loads_t.p_set[ts_cols].max().groupby(relevant_loads.loc[ts_cols, "bus"]).max()
+            peak_per_bus = peak_per_bus.combine(ts_peak, max, fill_value=0)
+
+        e_nom_per_bus = (peak_per_bus * shift * max_shift_hours).reindex(df.index, fill_value=0)
+        logger.info(
+            f"DR shifting window: {max_shift_hours}h; "
+            f"e_nom range [{e_nom_per_bus.min():.0f}, {e_nom_per_bus.max():.0f}] MWh"
+        )
+    else:
+        e_nom_per_bus = pd.Series(np.inf, index=df.index)
+
+    # two virtual buses for forward and backward load shifting
 
     n.madd(
         "Bus",
@@ -695,7 +760,7 @@ def add_demand_response(
         substation_lv=df.substation_lv,
     )
 
-    # seperate charging/discharging links for easier constraint generation
+    # separate charging/discharging links for easier constraint generation
 
     n.madd(
         "Link",
@@ -741,8 +806,8 @@ def add_demand_response(
         p_nom=np.inf,
     )
 
-    # backward stores have positive marginal cost storage and postive e
-    # forward stores have negative marginal cost storage and negative e
+    # backward stores: positive marginal cost, e ∈ [0, e_nom]
+    # forward stores:  negative marginal cost, e ∈ [-e_nom, 0]
 
     n.madd(
         "Store",
@@ -751,7 +816,7 @@ def add_demand_response(
         bus=df.index + "-bck-dr",
         e_cyclic=True,
         e_nom_extendable=False,
-        e_nom=np.inf,
+        e_nom=e_nom_per_bus.values,
         e_min_pu=0,
         e_max_pu=1,
         carrier="demand_response",
@@ -765,7 +830,7 @@ def add_demand_response(
         bus=df.index + "-fwd-dr",
         e_cyclic=True,
         e_nom_extendable=False,
-        e_nom=np.inf,
+        e_nom=e_nom_per_bus.values,
         e_min_pu=-1,
         e_max_pu=0,
         carrier="demand_response",
@@ -1255,6 +1320,14 @@ if __name__ == "__main__":
         for i in range(len(n.investment_periods))
     }
 
+    base_costs_df = None
+    if "base_costs" in dict(snakemake.input):
+        base_costs_df = pd.read_csv(snakemake.input["base_costs"]).pivot(
+            index="pypsa-name",
+            columns="parameter",
+            values="value",
+        )
+
     if any("PHS" in s for s in elec_config["extendable_carriers"]["StorageUnit"]):
         attach_phs_storageunits(n, elec_config, costs_dict[n.investment_periods[0]])
 
@@ -1265,6 +1338,7 @@ if __name__ == "__main__":
             costs_dict[n.investment_periods[0]],
             economic_retirement_gens,
             economic=True,
+            base_costs=base_costs_df,
         )
     # Split renewable generators from the first investement period to support lifetime retirement
     split_retirement_gens(
@@ -1272,6 +1346,7 @@ if __name__ == "__main__":
         costs_dict[n.investment_periods[0]],
         set(elec_config.get("renewable_carriers", None)),
         economic=False,
+        base_costs=base_costs_df,
     )
 
     multi_horizon_gens = n.generators[

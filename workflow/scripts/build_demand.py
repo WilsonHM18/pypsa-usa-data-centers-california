@@ -2351,10 +2351,20 @@ if __name__ == "__main__":
     sns = n.snapshots
 
     if demand_profile == "efs":
-        # guarantee EFS data will have a base year to scale
-        assert min(planning_horizons) in (2018, 2020, 2024, 2030, 2040, 2050)
+        # guarantee EFS data will have a base year to scale from (earliest EFS year is 2018)
+        assert min(planning_horizons) >= 2018, (
+            f"Minimum planning horizon {min(planning_horizons)} is before the first EFS year (2018)"
+        )
         reader = ReadEfs(demand_files)
-        sns = n.snapshots.get_level_values(1)
+        # EFS only has profiles for specific years. Map each snapshot's year to the
+        # nearest available EFS year that does not exceed the investment period year,
+        # so the snapshot filter in _filter_on_snapshots finds a match.
+        _efs_years = [2018, 2020, 2022, 2024, 2030, 2040, 2050]
+        sns = n.snapshots.get_level_values(1).map(
+            lambda x: x.replace(
+                year=max((y for y in _efs_years if y <= x.year), default=_efs_years[0])
+            )
+        )
 
     elif demand_profile == "eia":
         assert profile_year in range(2018, 2024)

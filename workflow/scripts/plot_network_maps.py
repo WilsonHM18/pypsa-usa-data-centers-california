@@ -229,7 +229,7 @@ def plot_capacity_map(
 
     with plt.rc_context({"patch.linewidth": 0.1}):
         n.plot(
-            bus_sizes=bus_values / bus_scale,
+            bus_sizes={} if bus_values.empty else bus_values / bus_scale,
             bus_colors=n.carriers.color,
             bus_alpha=0.7,
             line_widths=line_width,
@@ -316,7 +316,7 @@ def plot_demand_map(
 
     with plt.rc_context({"patch.linewidth": 0.1}):
         n.plot(
-            bus_sizes=bus_values / bus_scale,
+            bus_sizes={} if bus_values.empty else bus_values / bus_scale,
             # bus_colors=None,
             bus_alpha=0.7,
             line_widths=line_width,

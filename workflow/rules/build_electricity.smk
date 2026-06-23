@@ -599,6 +599,7 @@ rule add_electricity:
         costs=config["costs"],
         planning_horizons=config["scenario"]["planning_horizons"],
         eia_api=config["api"]["eia"],
+        respect_planned_retirements=config.get("electricity", {}).get("respect_planned_retirements", False),
     input:
         unpack(dynamic_fuel_price_files),
         **{
@@ -621,6 +622,11 @@ rule add_electricity:
         tech_costs=RESOURCES
         + f"costs/costs_{config['scenario']['planning_horizons'][0]}.csv",
         # attach first horizon costs
+        **(
+            {"base_costs": RESOURCES + "costs/costs_2025.csv"}
+            if config["scenario"]["planning_horizons"][0] != 2025
+            else {}
+        ),
         regions_onshore=RESOURCES + "{interconnect}/Geospatial/regions_onshore.geojson",
         regions_offshore=RESOURCES
         + "{interconnect}/Geospatial/regions_offshore.geojson",
@@ -766,6 +772,11 @@ rule add_extra_components:
             else []
         ),
         county_shapes=DATA + "counties/cb_2020_us_county_500k.shp",
+        **(
+            {"base_costs": RESOURCES + "costs/costs_2025.csv"}
+            if config["scenario"]["planning_horizons"][0] != 2025
+            else {}
+        ),
     params:
         retirement=config["electricity"].get("retirement", "technical"),
         demand_response=config["electricity"].get("demand_response", {}),

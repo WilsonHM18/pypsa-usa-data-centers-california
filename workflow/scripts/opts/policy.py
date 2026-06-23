@@ -270,6 +270,28 @@ def add_RPS_constraints(n, config, sector, snakemake=None):
         value_col="pct",
     )
 
+    # Explicit portfolio_standards.csv entries take precedence over REEDS data.
+    # Filter REEDS rows for any (region, planning_horizon) already covered explicitly
+    # to avoid duplicate constraint names when both sources map to the same trading zone.
+    explicit_pairs = set(
+        zip(
+            portfolio_standards.region.astype(str).str.strip(),
+            portfolio_standards.planning_horizon.astype(int),
+        )
+    )
+    rps_reeds = rps_reeds[
+        ~rps_reeds.apply(
+            lambda r: (str(r.region).strip(), int(r.planning_horizon)) in explicit_pairs,
+            axis=1,
+        )
+    ]
+    ces_reeds = ces_reeds[
+        ~ces_reeds.apply(
+            lambda r: (str(r.region).strip(), int(r.planning_horizon)) in explicit_pairs,
+            axis=1,
+        )
+    ]
+
     # Concatenate all portfolio standards
     portfolio_standards = pd.concat([portfolio_standards, rps_reeds, ces_reeds])
 
@@ -423,3 +445,236 @@ def add_regional_co2limit(n, config):
         logger.info(
             f"Adding regional Co2 Limit for {emmission_lim.name} in {planning_horizon} with limit {rhs}",
         )
+
+
+def add_cfe_matching_constraint(n, config):
+    """
+    Enforce Carbon-Free Energy (CFE) matching for data center loads.
+
+    Two modes are supported, selected via ``config["data_centers"]["cfe_matching"]``:
+
+    * ``"24_7"``  — per-snapshot system-wide constraint: total CFE generation in
+      every hour must be ≥ total DC load in that hour.  This mirrors corporate
+      24/7 CFE pledges (e.g. Google, Microsoft).
+
+    * ``"annual"`` — per-investment-period constraint: total weighted CFE energy
+      over each planning period must be ≥ total weighted DC load energy.  This
+      mirrors annual renewable energy certificate (REC) matching.
+
+    CFE generators are identified dynamically as those whose carrier has zero
+    CO2 emissions (``n.carriers.co2_emissions == 0``).
+    """
+    cfe_mode = config.get("data_centers", {}).get("cfe_matching")
+    if not cfe_mode:
+        return
+
+    dc_loads = n.loads[n.loads.carrier == "DC"].index
+    if dc_loads.empty:
+        logger.info("No DC loads found; skipping CFE matching constraint.")
+        return
+
+    # Identify zero-emission (CFE) generators
+    cfe_carriers = n.carriers[n.carriers.co2_emissions.fillna(0) == 0].index
+    cfe_gens = n.generators[n.generators.carrier.isin(cfe_carriers)].index
+    if cfe_gens.empty:
+        logger.warning("No CFE generators found; skipping CFE matching constraint.")
+        return
+
+    is_multiindex = isinstance(n.snapshots, pd.MultiIndex)
+    weightings = n.snapshot_weightings.loc[n.snapshots]
+    model_horizon = get_model_horizon(n.model)
+
+    # Precompute DC load series — use get_switchable_as_dense so static p_set loads
+    # (not in n.loads_t.p_set) are handled correctly alongside time-varying ones.
+    all_loads_p_set = n.get_switchable_as_dense("Load", "p_set")
+    dc_load_series = all_loads_p_set[dc_loads].sum(axis=1)  # total DC load per snapshot
+
+    if cfe_mode == "24_7":
+        # Vectorized: one constraint per snapshot.
+        # Total CFE generation (summed across all CFE generators) >= total DC load.
+        # A slack variable absorbs structurally infeasible hours (e.g. nighttime in
+        # periods where dispatchable clean baseload < DC load).  The slack is penalised
+        # at $1 M/MWh so the optimiser only activates it when strictly necessary.
+        import xarray as xr
+
+        CFE_SLACK_PENALTY = 1_000_000  # $/MWh — large enough to minimise slack
+
+        cfe_p = n.model["Generator-p"].sel({"Generator": cfe_gens})
+        lhs = cfe_p.sum("Generator")  # DataArray indexed by snapshot
+
+        rhs = xr.DataArray(dc_load_series.values, coords={"snapshot": n.snapshots}, dims="snapshot")
+
+        # Slack variable: one per snapshot, non-negative
+        cfe_slack = n.model.add_variables(
+            lower=0,
+            coords=[n.snapshots],
+            name="cfe_247_slack",
+        )
+        n.model.add_constraints(lhs + cfe_slack >= rhs, name="cfe_247")
+
+        # Add slack penalty to objective
+        weightings_gen = n.snapshot_weightings.generators
+        weights_da = xr.DataArray(
+            weightings_gen.values, coords={"snapshot": n.snapshots}, dims="snapshot"
+        )
+        n.model.objective = n.model.objective + (cfe_slack * weights_da * CFE_SLACK_PENALTY).sum()
+
+        logger.info(
+            f"Added 24/7 CFE matching constraints with slack "
+            f"({len(n.snapshots)} snapshots, {len(cfe_gens)} CFE generators, "
+            f"{len(dc_loads)} DC loads, penalty=${CFE_SLACK_PENALTY:,}/MWh)"
+        )
+
+    elif cfe_mode == "annual":
+        # One constraint per investment period: weighted CFE energy >= weighted DC energy
+        periods_to_run = [p for p in n.investment_periods if p in model_horizon] if is_multiindex else [None]
+        for period in periods_to_run:
+            if is_multiindex:
+                period_snaps = n.snapshots[n.snapshots.get_level_values(0) == period]
+                weights = weightings.generators.loc[period]
+            else:
+                period_snaps = n.snapshots
+                weights = weightings.generators
+
+            cfe_p = n.model["Generator-p"].sel({"snapshot": period_snaps, "Generator": cfe_gens})
+            import xarray as xr
+            weights_da = xr.DataArray(weights.values, coords=[period_snaps], dims=["snapshot"])
+            lhs = (cfe_p * weights_da).sum()
+            dc_energy = float((dc_load_series.loc[period_snaps] * weights).sum())
+            constraint_name = f"cfe_annual_{period}" if is_multiindex else "cfe_annual"
+            n.model.add_constraints(lhs >= dc_energy, name=constraint_name)
+        logger.info(
+            f"Added annual CFE matching constraints (mode=annual, "
+            f"{len(cfe_gens)} CFE generators)"
+        )
+    else:
+        logger.warning(f"Unknown cfe_matching mode '{cfe_mode}'; skipping.")
+
+
+def report_cfe_slack(n):
+    """
+    After solving, log CFE 24/7 slack usage. Called once per investment period.
+
+    Reports number/fraction of hours where clean generation couldn't cover DC
+    load, plus max/mean shortfall and total unmatched energy.
+    """
+    if "cfe_247_slack" not in n.model.solution:
+        return
+
+    slack_vals = n.model.solution["cfe_247_slack"].to_series()
+    slack_vals = slack_vals[slack_vals.index.isin(n.snapshots)]
+
+    threshold = 1e-3  # MW — treat values below this as numerically zero
+    violated = slack_vals[slack_vals > threshold]
+    n_total = len(slack_vals)
+    n_violated = len(violated)
+
+    if n_violated == 0:
+        logger.info("CFE 24/7: no infeasible hours — slack unused.")
+        return
+
+    weights = n.snapshot_weightings.generators.reindex(violated.index, fill_value=1.0)
+    slack_energy_mwh = float((violated * weights).sum())
+
+    logger.warning(
+        f"CFE 24/7 slack active: {n_violated}/{n_total} hours ({100*n_violated/n_total:.1f}%) "
+        f"violated | max slack {violated.max():.1f} MW | mean {violated.mean():.1f} MW | "
+        f"total unmatched energy {slack_energy_mwh:,.0f} MWh"
+    )
+
+
+def add_dc_flexibility_constraint(n, config):
+    """
+    Cap annual unserved data center energy per bus per investment period.
+
+    For each bus that has a ``dc_flexibility`` generator, the total weighted
+    dispatch over a planning period cannot exceed ``flexibility_fraction`` times
+    the DC load energy in that same period.  The constraint is applied
+    independently per bus so that regional flexibility is not pooled.
+
+    Parameters
+    ----------
+    n : pypsa.Network
+    config : dict
+        Full Snakemake config dict; reads ``config["data_centers"]["flexibility_fraction"]``.
+    """
+    flex_fraction = config.get("data_centers", {}).get("flexibility_fraction", 0)
+    if not flex_fraction:
+        return
+
+    flex_gens = n.generators[n.generators.carrier == "dc_flexibility"]
+    if flex_gens.empty:
+        logger.info("No dc_flexibility generators found; skipping constraint.")
+        return
+
+    is_multiindex = isinstance(n.snapshots, pd.MultiIndex)
+    weightings = n.snapshot_weightings.loc[n.snapshots]
+    model_horizon = get_model_horizon(n.model)
+
+    n_constraints = 0
+    all_loads_p_set = n.get_switchable_as_dense("Load", "p_set")
+
+    if is_multiindex:
+        for period in n.investment_periods:
+            if period not in model_horizon:
+                continue
+
+            period_weights = weightings.generators.loc[period]
+
+            for gen_name in flex_gens.index:
+                bus = flex_gens.loc[gen_name, "bus"]
+
+                dc_loads_at_bus = n.loads[
+                    (n.loads.bus == bus) & (n.loads.carrier == "DC")
+                ].index
+                if dc_loads_at_bus.empty:
+                    logger.warning(
+                        f"No DC load at bus {bus}; skipping flexibility constraint."
+                    )
+                    continue
+                dc_load_name = dc_loads_at_bus[0]
+
+                # LHS: weighted flexibility dispatch this period
+                flex_p = n.model["Generator-p"].loc[:, gen_name].sel(period=period)
+                lhs = (flex_p * period_weights).sum()
+
+                # RHS: fraction of DC load energy this period
+                dc_energy = (
+                    all_loads_p_set.loc[period][dc_load_name] * period_weights
+                ).sum()
+                rhs = float(flex_fraction * dc_energy)
+
+                n.model.add_constraints(
+                    lhs <= rhs,
+                    name=f"dc_flexibility_{bus}_{period}",
+                )
+                n_constraints += 1
+    else:
+        weights = weightings.generators
+
+        for gen_name in flex_gens.index:
+            bus = flex_gens.loc[gen_name, "bus"]
+
+            dc_loads_at_bus = n.loads[
+                (n.loads.bus == bus) & (n.loads.carrier == "DC")
+            ].index
+            if dc_loads_at_bus.empty:
+                logger.warning(
+                    f"No DC load at bus {bus}; skipping flexibility constraint."
+                )
+                continue
+            dc_load_name = dc_loads_at_bus[0]
+
+            flex_p = n.model["Generator-p"].loc[:, gen_name]
+            lhs = (flex_p * weights).sum()
+
+            dc_energy = (all_loads_p_set[dc_load_name] * weights).sum()
+            rhs = float(flex_fraction * dc_energy)
+
+            n.model.add_constraints(lhs <= rhs, name=f"dc_flexibility_{bus}")
+            n_constraints += 1
+
+    logger.info(
+        f"Added {n_constraints} DC flexibility constraints "
+        f"(flexibility_fraction={flex_fraction:.0%})"
+    )
