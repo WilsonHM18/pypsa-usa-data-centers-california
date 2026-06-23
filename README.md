@@ -1,11 +1,6 @@
 # PyPSA-USA: California Data Center Energy Study
 
-This repository contains the code and configuration files to reproduce the California data center electricity demand scenarios from:
-
-> **"The Grid Impacts of Data Center Growth in California"**
-> Will McNeil, Steven Davis — Stanford University
-
-The study uses [PyPSA-USA](https://pypsa-usa.readthedocs.io/en/latest/) to model the California bulk power system (58-node WECC network reduced to CA) across five policy scenarios examining how data center demand growth affects system costs, capacity investment, and emissions.
+This repository contains the code and configuration files to reproduce the California data center electricity demand scenarios. The study uses [PyPSA-USA](https://pypsa-usa.readthedocs.io/en/latest/) to model the California bulk power system (58-node WECC network reduced to CA) across five policy scenarios examining how data center demand growth affects system costs, capacity investment, and emissions.
 
 ---
 
