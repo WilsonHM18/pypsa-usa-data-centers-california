@@ -1,7 +1,7 @@
 __default__:
-  account: sjdavis
+  account: YOUR_PI_GROUP   # replace with your Sherlock PI group (e.g. sjdavis)
   partition: serc
-  email: wmcneil@stanford.edu
+  email: YOUR_EMAIL        # replace with your email address
   walltime: 00:30:00   # time limit for each job
   cpus_per_task: 1   # number of cores per job
   chdir:
