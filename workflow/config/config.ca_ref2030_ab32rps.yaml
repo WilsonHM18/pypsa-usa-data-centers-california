@@ -1,7 +1,7 @@
 # Reference_2030: 2030 system, 2030 DC demand, dispatch only. Includes Form 860 planned additions and retirements.
 # Fixed capacity at current operating fleet — production cost run.
 run:
-  name: "CA_Ref2030_AB32RPS"
+  name: "CA_Ref2030"
   disable_progressbar: false
   shared_resources: false
   shared_cutouts: true
@@ -15,7 +15,7 @@ scenario:
   interconnect: [western]
   clusters: [58]
   simpl: [150]
-  opts: [RPS-REM-TCT-3h]
+  opts: [TCT-3h]
   ll: [v1.0]
   sector: ""
   planning_horizons: [2030]

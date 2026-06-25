@@ -114,12 +114,6 @@ snakemake --configfile config/config.ca_ref2025.yaml --cores 4 -n   # dry run
 
 ### Batch submission (Sherlock)
 
-Before submitting, edit `config/config.cluster.yaml` and set `account` to your PI's Sherlock group and `email` to your address. Then set the `SNAKEMAKE` environment variable to your Snakemake executable path:
-
-```bash
-export SNAKEMAKE=/path/to/your/envs/pypsa-usa/bin/snakemake
-```
-
 Submit each scenario as a Snakemake-managed SLURM job:
 
 ```bash
