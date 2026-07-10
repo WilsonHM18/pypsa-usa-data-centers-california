@@ -29,5 +29,23 @@ solve_network_ab2383:
 solve_network_validation:
   walltime: 09:00:00
 
+prepare_network:
+  walltime: 01:00:00
+
+add_extra_components:
+  walltime: 01:00:00
+
 add_demand:
   walltime: 02:00:00
+
+build_bus_regions:
+  walltime: 02:00:00
+
+build_electrical_demand:
+  walltime: 02:00:00
+
+plot_statistics:
+  walltime: 01:00:00
+
+plot_network_maps:
+  walltime: 01:00:00

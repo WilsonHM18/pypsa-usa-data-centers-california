@@ -336,6 +336,7 @@ def add_RPS_constraints(n, config, sector, snakemake=None):
             portfolio_standards.loc[constraint_row.name, "rps_rhs_sector"] = region_rps_rhs_sector
 
     # Iterate through constraints and add RPS constraints to the model
+    _constraint_name_counts = {}
     for (rec_trading_zone, planning_horizon, policy_carriers), zone_constraints in portfolio_standards.groupby(
         ["rec_trading_zone", "planning_horizon", "carrier"],
     ):
@@ -349,7 +350,7 @@ def add_RPS_constraints(n, config, sector, snakemake=None):
         region_gens_eligible = region_gens[region_gens.carrier.isin(carriers)]
 
         if region_gens_eligible.empty:
-            return
+            continue
 
         elif not sector:
             # Eligible generation
@@ -374,13 +375,15 @@ def add_RPS_constraints(n, config, sector, snakemake=None):
         else:
             logger.error("Undefined control flow for RPS constraint.")
 
-        n.model.add_constraints(
-            lhs >= rhs,
-            name=f"GlobalConstraint-{rec_trading_zone}_{planning_horizon}_rps_limit",
-        )
+        policy_type = "ces" if "nuclear" in carriers else "rps"
+        base_name = f"GlobalConstraint-{rec_trading_zone}_{planning_horizon}_{policy_type}_limit"
+        count = _constraint_name_counts.get(base_name, 0)
+        _constraint_name_counts[base_name] = count + 1
+        name = base_name if count == 0 else f"{base_name}_{count}"
+        n.model.add_constraints(lhs >= rhs, name=name)
 
         logger.info(
-            f"Added RPS constraint '{rec_trading_zone}' for {planning_horizon} "
+            f"Added {policy_type.upper()} constraint '{rec_trading_zone}' for {planning_horizon} "
             f"requiring {renewable_gen / 1e6:.1f} TWh of {policy_carriers} generation ",
         )
 

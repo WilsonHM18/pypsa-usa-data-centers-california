@@ -193,10 +193,10 @@ rule build_renewable_profiles:
         BENCHMARKS + "{interconnect}/build_renewable_profiles_{technology}"
     threads: ATLITE_NPROCESSES
     resources:
-        mem_mb=lambda wildcards, input, attempt: (
-            ATLITE_NPROCESSES * input.size // 2000000
-        )
-        * 1.5,
+        mem_mb=lambda wildcards, input, attempt: max(
+            int((ATLITE_NPROCESSES * input.size // 2000000) * 1.5),
+            config.get("atlite", {}).get("min_mem_mb", 0),
+        ),
         walltime=config_provider(
             "walltime", "build_renewable_profiles", default="02:30:00"
         ),
