@@ -9,8 +9,8 @@ This repository contains the code and configuration files to reproduce the Calif
 | Scenario | Year | DC Demand | Mode | Config |
 |---|---|---|---|---|
 | Reference 2025 | 2025 | Current (2025) | Dispatch | `config.ca_ref2025.yaml` |
-| Reference 2030 | 2030 | Projected (2030) | Dispatch | `config.ca_ref2030_ab32rps.yaml` |
-| Counterfactual 2030 | 2030 | Frozen at 2025 | Dispatch | `config.ca_counterfactual2030_ab32rps.yaml` |
+| Reference 2030 | 2030 | Projected (2030) | Dispatch | `config.ca_ref2030.yaml` |
+| Counterfactual 2030 | 2030 | Frozen at 2025 | Dispatch | `config.ca_counterfactual2030.yaml` |
 | Optimized 2030 | 2030 | Projected (2030) | Capacity expansion | `config.ca_optimized2030_ab32rps.yaml` |
 | Counterfactual 2030 (Opt) | 2030 | Frozen at 2025 | Capacity expansion | `config.ca_counterfactual2030_opt_ab32rps.yaml` |
 
@@ -67,8 +67,8 @@ Each county is identified by its 6-character FIPS code prefixed with `p` (e.g., 
 workflow/
 ├── config/
 │   ├── config.ca_ref2025.yaml                      # Ref 2025 scenario
-│   ├── config.ca_ref2030_ab32rps.yaml               # Ref 2030 scenario
-│   ├── config.ca_counterfactual2030_ab32rps.yaml    # Counterfactual 2030
+│   ├── config.ca_ref2030.yaml                       # Ref 2030 scenario
+│   ├── config.ca_counterfactual2030.yaml            # Counterfactual 2030
 │   ├── config.ca_optimized2030_ab32rps.yaml         # Optimized 2030
 │   ├── config.ca_counterfactual2030_opt_ab32rps.yaml # Counterfactual 2030 (Opt)
 │   ├── config.cluster.yaml                          # Sherlock HPC cluster settings
@@ -93,8 +93,8 @@ workflow/
 │   │   └── reserves.py                              # Modified: CA network guard (no AC lines)
 │   └── solve_network.py                             # Modified: solver settings
 ├── run_slurm_ca_ref2025.sh
-├── run_slurm_ca_ref2030_ab32rps.sh
-├── run_slurm_ca_counterfactual2030_ab32rps.sh
+├── run_slurm_ca_ref2030.sh
+├── run_slurm_ca_counterfactual2030.sh
 ├── run_slurm_ca_optimized2030_ab32rps.sh
 └── run_slurm_ca_counterfactual2030_opt_ab32rps.sh
 ```
@@ -119,8 +119,8 @@ Submit each scenario as a Snakemake-managed SLURM job:
 ```bash
 cd workflow
 sbatch run_slurm_ca_ref2025.sh                          # Reference 2025
-sbatch run_slurm_ca_ref2030_ab32rps.sh                  # Reference 2030
-sbatch run_slurm_ca_counterfactual2030_ab32rps.sh        # Counterfactual 2030
+sbatch run_slurm_ca_ref2030.sh                           # Reference 2030
+sbatch run_slurm_ca_counterfactual2030.sh                # Counterfactual 2030
 sbatch run_slurm_ca_optimized2030_ab32rps.sh             # Optimized 2030
 sbatch run_slurm_ca_counterfactual2030_opt_ab32rps.sh    # Counterfactual 2030 (Opt)
 ```
@@ -162,7 +162,7 @@ A 15% California PRM is enforced in capacity expansion scenarios via `opts: [RPS
 |---|---|---|
 | `planning_horizons` | `[2025]` or `[2030]` | `[2030]` |
 | `ll` (transmission) | `v1.0` (fixed) | `vopt` (optimizable) |
-| `opts` | `REM-TCT-3h` | `RPS-REM-PRM-TCT-3h` |
+| `opts` | `TCT-3h` | `RPS-REM-PRM-TCT-3h` |
 | `extendable_carriers` | none | solar, onwind, OCGT, CCGT, CCGT-95CCS, batteries |
 | `retirement` | `technical` | `economic` |
 | `data_centers.demand_file` | `ca_county_demand_MWh.csv` | `ca_county_demand_MWh.csv` or `_counterfactual` |

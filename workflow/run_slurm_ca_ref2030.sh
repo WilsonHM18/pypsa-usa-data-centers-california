@@ -1,7 +1,7 @@
 #!/bin/bash
 #SBATCH -p serc
-#SBATCH -o logs/snakemake_ca_ref2030_ab32rps.out
-#SBATCH -e logs/snakemake_ca_ref2030_ab32rps.err
+#SBATCH -o logs/snakemake_ca_ref2030.out
+#SBATCH -e logs/snakemake_ca_ref2030.err
 #SBATCH --time 96:00:00
 #SBATCH --mail-type END,FAIL
 
@@ -18,6 +18,6 @@ $SNAKEMAKE \
   --cluster-config config/config.cluster.yaml \
   --jobs 20 \
   --latency-wait 60 \
-  --configfile config/config.ca_ref2030_ab32rps.yaml \
+  --configfile config/config.ca_ref2030.yaml \
   --nolock \
   --rerun-incomplete
